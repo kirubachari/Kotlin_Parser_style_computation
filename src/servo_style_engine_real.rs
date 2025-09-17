@@ -175,28 +175,39 @@ impl ServoStyleEngineReal {
         
         println!("🚀 Running Servo to compute styles using real Stylo APIs...");
         println!("   HTML file: {:?}", temp_path);
+        println!("   Servo command: {}", servo_cmd);
         
-        // Run Servo with the HTML file
+        // Run Servo with timeout and better arguments
         let output = Command::new(servo_cmd)
             .arg("--headless")
-            .arg("--hard-fail")  // Exit on JS errors
-            .arg(temp_path)
+            .arg("--disable-crash-reporter")
+            .arg("--disable-gpu")
+            .arg("--no-sandbox")
+            .arg("--virtual-time-budget=5000")  // 5 second timeout
+            .arg(format!("file://{}", temp_path.display()))
             .output()
             .map_err(|e| ServoStyleError::CommunicationError(format!("Failed to run Servo: {}", e)))?;
+        
+        println!("   Servo exit status: {}", output.status);
         
         // Extract computed style results from Servo's console output
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         
+        println!("   Servo stdout: {}", stdout);
+        println!("   Servo stderr: {}", stderr);
+        
         // Look for our computed style results in the output
         for line in stdout.lines().chain(stderr.lines()) {
             if line.contains("COMPUTED_STYLE_RESULT:") {
                 if let Some(json_part) = line.split("COMPUTED_STYLE_RESULT:").nth(1) {
+                    println!("   Found result: {}", json_part);
                     return Ok(json_part.to_string());
                 }
             }
             if line.contains("COMPUTED_STYLES_RESULT:") {
                 if let Some(json_part) = line.split("COMPUTED_STYLES_RESULT:").nth(1) {
+                    println!("   Found all styles result: {}", json_part);
                     return Ok(json_part.to_string());
                 }
             }
