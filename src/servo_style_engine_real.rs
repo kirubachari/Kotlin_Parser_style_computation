@@ -175,45 +175,62 @@ impl ServoStyleEngineReal {
         println!("   HTML file: {:?}", temp_path);
         println!("   Servo command: {}", servo_cmd);
         
-        // Run Servo with timeout
-        println!("🚀 Starting Servo process...");
+        // First, let's save the HTML content to debug
+        let debug_path = "/tmp/debug_servo.html";
+        std::fs::write(debug_path, html_content)
+            .map_err(|e| ServoStyleError::CommunicationError(format!("Failed to write debug file: {}", e)))?;
+        println!("   Debug HTML saved to: {}", debug_path);
         
-        // Use tokio::process for async timeout support
-        let result = tokio::time::timeout(
-            tokio::time::Duration::from_secs(10),
-            async {
-                tokio::process::Command::new(servo_cmd)
-                    .arg("--headless")
-                    .arg(format!("file://{}", temp_path.display()))
-                    .output()
-                    .await
+        // Try a different approach - spawn process and read output in real-time
+        println!("🚀 Starting Servo process with real-time output capture...");
+        
+        let mut child = tokio::process::Command::new(servo_cmd)
+            .arg("--headless")
+            .arg(format!("file://{}", temp_path.display()))
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| ServoStyleError::CommunicationError(format!("Failed to start Servo: {}", e)))?;
+        
+        // Wait for output with timeout, but check periodically
+        let start_time = std::time::Instant::now();
+        let timeout_duration = std::time::Duration::from_secs(15);
+        
+        while start_time.elapsed() < timeout_duration {
+            // Check if process has finished
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    println!("✅ Servo finished with status: {}", status);
+                    let output = child.wait_with_output().await
+                        .map_err(|e| ServoStyleError::CommunicationError(format!("Failed to get output: {}", e)))?;
+                    
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    
+                    println!("   Servo stdout: {}", stdout);
+                    println!("   Servo stderr: {}", stderr);
+                    
+                    // Look for results in output
+                    return self.parse_servo_output(&stdout, &stderr);
+                }
+                Ok(None) => {
+                    // Process still running, wait a bit
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                }
+                Err(e) => {
+                    return Err(ServoStyleError::CommunicationError(format!("Error checking process: {}", e)));
+                }
             }
-        ).await;
+        }
         
-        let output = match result {
-            Ok(Ok(output)) => {
-                println!("✅ Servo completed successfully");
-                output
-            },
-            Ok(Err(e)) => {
-                println!("❌ Servo process error: {}", e);
-                return Err(ServoStyleError::CommunicationError(format!("Servo process error: {}", e)));
-            },
-            Err(_) => {
-                println!("⏰ Servo timed out after 10 seconds");
-                return Err(ServoStyleError::CommunicationError("Servo process timed out after 10 seconds".to_string()));
-            }
-        };
-        
-        println!("   Servo exit status: {}", output.status);
-        
-        // Extract computed style results from Servo's console output
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        
-        println!("   Servo stdout: {}", stdout);
-        println!("   Servo stderr: {}", stderr);
-        
+        // Timeout reached, kill the process
+        println!("⏰ Servo timed out after 15 seconds, killing process...");
+        let _ = child.kill().await;
+        Err(ServoStyleError::CommunicationError("Servo process timed out after 15 seconds".to_string()))
+    }
+    
+    /// Parse Servo output to extract computed style results
+    fn parse_servo_output(&self, stdout: &str, stderr: &str) -> Result<String, ServoStyleError> {
         // Look for our computed style results in the output
         for line in stdout.lines().chain(stderr.lines()) {
             if line.contains("COMPUTED_STYLE_RESULT:") {
