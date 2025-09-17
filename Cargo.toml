@@ -3,6 +3,14 @@ name = "stylo-compute"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "stylo_compute"
+path = "src/lib.rs"
+
+[[bin]]
+name = "stylo-compute"
+path = "src/main.rs"
+
 [dependencies]
 # For Servo process communication approach
 serde = { version = "1.0", features = ["derive"] }
@@ -23,3 +31,11 @@ which = "4.0"
 # [features]
 # default = ["servo"]
 # servo = ["servo_components_layout/servo", "servo_components_script/servo"]
+
+[[example]]
+name = "servo_integration_demo"
+path = "examples/servo_integration_demo.rs"
+
+[[example]]
+name = "real_servo_demo"
+path = "examples/real_servo_demo.rs"

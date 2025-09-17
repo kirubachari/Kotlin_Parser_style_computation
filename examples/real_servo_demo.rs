@@ -10,25 +10,93 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Try to create real Servo engine
     println!("📋 Test 1: Creating Real ServoStyleEngine");
-    let mut engine = match ServoStyleEngineReal::new() {
-        Ok(engine) => {
-            println!("✅ Real Servo integration enabled!");
-            engine
+    
+    // First check if we have a servo_config.toml file
+    let config_path = std::path::Path::new("servo_config.toml");
+    let servo_path_from_config: Option<String> = if config_path.exists() {
+        match std::fs::read_to_string(config_path) {
+            Ok(content) => {
+                // Simple TOML parsing to extract executable_path
+                let mut found_path = None;
+                for line in content.lines() {
+                    if line.trim().starts_with("executable_path = ") {
+                        if let Some(path_part) = line.split('=').nth(1) {
+                            let path = path_part.trim().trim_matches('"').to_string();
+                            println!("🔧 Found Servo path in config: {}", path);
+                            found_path = Some(path);
+                            break;
+                        }
+                    }
+                }
+                found_path
+            }
+            Err(_) => None,
         }
-        Err(ServoStyleError::ServoNotFound) => {
+    } else {
+        None
+    };
+    
+    // Try different approaches to find Servo
+    let engine = if let Some(config_path) = servo_path_from_config {
+        // Use path from config file
+        match ServoStyleEngineReal::with_servo_path(Some(config_path.clone())) {
+            Ok(eng) => {
+                println!("✅ Real Servo integration enabled using config: {}", config_path);
+                Some(eng)
+            }
+            Err(e) => {
+                println!("❌ Error with config path {}: {}", config_path, e);
+                None
+            }
+        }
+    } else {
+        // Fall back to common paths
+        let servo_paths = vec![
+            ("PATH", None),  // In PATH
+            ("./servo/target/debug/servo", Some("./servo/target/debug/servo".to_string())),  // Local build
+            ("../servo/target/debug/servo", Some("../servo/target/debug/servo".to_string())), // Parent directory
+            ("/usr/local/bin/servo", Some("/usr/local/bin/servo".to_string())),        // System install
+            ("/home/user/servo/target/debug/servo", Some("/home/user/servo/target/debug/servo".to_string())), // User build
+        ];
+        
+        let mut engine = None;
+        for (path_desc, path_opt) in &servo_paths {
+            match if path_opt.is_none() {
+                ServoStyleEngineReal::new()
+            } else {
+                ServoStyleEngineReal::with_servo_path(path_opt.clone())
+            } {
+                Ok(eng) => {
+                    println!("✅ Real Servo integration enabled using: {}", path_desc);
+                    engine = Some(eng);
+                    break;
+                }
+                Err(_) => {
+                    continue; // Try next path
+                }
+            }
+        }
+        
+        if engine.is_none() {
+            println!("❌ Servo executable not found in any common locations");
+            println!("   Tried paths: {:?}", servo_paths.iter().map(|(desc, _)| desc).collect::<Vec<_>>());
+        }
+        
+        engine
+    };
+    
+    let mut engine = match engine {
+        Some(engine) => engine,
+        None => {
             println!("❌ Servo executable not found");
-            println!("   Please ensure Servo is built and available in PATH");
-            println!("   Or use ServoStyleEngineReal::with_servo_path() with custom path");
+            println!("   Please ensure Servo is built and available");
+            println!("   Or run: ./enable_servo.sh /path/to/your/servo");
             println!();
             println!("🔧 To build Servo on Linux:");
             println!("   git clone https://github.com/servo/servo.git");
             println!("   cd servo && ./mach build --dev");
             println!("   export PATH=\"$(pwd)/target/debug:$PATH\"");
             return Ok(());
-        }
-        Err(e) => {
-            println!("❌ Error creating Servo engine: {}", e);
-            return Err(e.into());
         }
     };
 
