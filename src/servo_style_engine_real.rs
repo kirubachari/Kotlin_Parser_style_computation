@@ -202,7 +202,7 @@ impl ServoStyleEngineReal {
         
         // Wait for output with timeout, but check periodically
         let start_time = std::time::Instant::now();
-        let timeout_duration = std::time::Duration::from_secs(15);
+        let timeout_duration = std::time::Duration::from_secs(2);
         
         while start_time.elapsed() < timeout_duration {
             // Check if process has finished
@@ -243,16 +243,16 @@ impl ServoStyleEngineReal {
         }
         
         // Timeout reached, kill the process
-        println!("⏰ Servo timed out after 15 seconds, killing process...");
+        println!("⏰ Servo timed out after 2 seconds, killing process...");
         let _ = child.kill().await;
         
         // Write timeout info to result file
-        let timeout_content = format!("TIMEOUT: Servo process timed out after 15 seconds\nTimestamp: {}\n", timestamp);
+        let timeout_content = format!("TIMEOUT: Servo process timed out after 2 seconds\nTimestamp: {}\n", timestamp);
         std::fs::write(&result_path, &timeout_content)
             .map_err(|e| ServoStyleError::CommunicationError(format!("Failed to write timeout result: {}", e)))?;
         println!("   📄 Timeout info saved to: {}", result_path);
         
-        Err(ServoStyleError::CommunicationError("Servo process timed out after 15 seconds".to_string()))
+        Err(ServoStyleError::CommunicationError("Servo process timed out after 2 seconds".to_string()))
     }
     
     /// Parse Servo output to extract computed style results
