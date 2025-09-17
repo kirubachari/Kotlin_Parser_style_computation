@@ -180,10 +180,6 @@ impl ServoStyleEngineReal {
         // Run Servo with timeout and better arguments
         let output = Command::new(servo_cmd)
             .arg("--headless")
-            .arg("--disable-crash-reporter")
-            .arg("--disable-gpu")
-            .arg("--no-sandbox")
-            .arg("--virtual-time-budget=5000")  // 5 second timeout
             .arg(format!("file://{}", temp_path.display()))
             .output()
             .map_err(|e| ServoStyleError::CommunicationError(format!("Failed to run Servo: {}", e)))?;
