@@ -1,6 +1,4 @@
 use std::collections::HashMap;
-use std::process::Command;
-use std::fs;
 use std::io::Write;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -177,12 +175,35 @@ impl ServoStyleEngineReal {
         println!("   HTML file: {:?}", temp_path);
         println!("   Servo command: {}", servo_cmd);
         
-        // Run Servo with timeout and better arguments
-        let output = Command::new(servo_cmd)
-            .arg("--headless")
-            .arg(format!("file://{}", temp_path.display()))
-            .output()
-            .map_err(|e| ServoStyleError::CommunicationError(format!("Failed to run Servo: {}", e)))?;
+        // Run Servo with timeout
+        println!("🚀 Starting Servo process...");
+        
+        // Use tokio::process for async timeout support
+        let result = tokio::time::timeout(
+            tokio::time::Duration::from_secs(10),
+            async {
+                tokio::process::Command::new(servo_cmd)
+                    .arg("--headless")
+                    .arg(format!("file://{}", temp_path.display()))
+                    .output()
+                    .await
+            }
+        ).await;
+        
+        let output = match result {
+            Ok(Ok(output)) => {
+                println!("✅ Servo completed successfully");
+                output
+            },
+            Ok(Err(e)) => {
+                println!("❌ Servo process error: {}", e);
+                return Err(ServoStyleError::CommunicationError(format!("Servo process error: {}", e)));
+            },
+            Err(_) => {
+                println!("⏰ Servo timed out after 10 seconds");
+                return Err(ServoStyleError::CommunicationError("Servo process timed out after 10 seconds".to_string()));
+            }
+        };
         
         println!("   Servo exit status: {}", output.status);
         
