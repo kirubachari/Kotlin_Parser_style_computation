@@ -1,4 +1,4 @@
-use stylo_compute::{ServoStyleEngineReal, ServoStyleError};
+use stylo_compute::ServoStyleEngineReal;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

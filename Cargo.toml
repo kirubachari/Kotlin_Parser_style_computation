@@ -39,3 +39,7 @@ path = "examples/servo_integration_demo.rs"
 [[example]]
 name = "real_servo_demo"
 path = "examples/real_servo_demo.rs"
+
+[[example]]
+name = "optimized_servo_demo"
+path = "examples/optimized_servo_demo.rs"

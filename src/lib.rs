@@ -77,11 +77,11 @@
 //! }
 //! ```
 
-mod servo_style_engine;
 mod servo_style_engine_real;
+mod servo_style_engine_optimized;
 
-pub use servo_style_engine::{ServoStyleEngine, ServoStyleError, compute_style_with_servo};
-pub use servo_style_engine_real::{ServoStyleEngineReal, compute_style_with_servo_real};
+pub use servo_style_engine_real::{ServoStyleEngineReal, ServoStyleError, compute_style_with_servo_real};
+pub use servo_style_engine_optimized::{ServoStyleEngineOptimized, compute_styles_batch_optimized};
 
 
 

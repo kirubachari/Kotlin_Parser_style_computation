@@ -1,4 +1,4 @@
-use stylo_compute::{ServoStyleEngine, ServoStyleError};
+use stylo_compute::{ServoStyleEngineReal, ServoStyleError};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -8,9 +8,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // Test 1: Basic engine creation
-    println!("📋 Test 1: Creating ServoStyleEngine");
-    let mut engine = ServoStyleEngine::new()?;
-    println!("✅ Successfully created ServoStyleEngine");
+    println!("📋 Test 1: Creating ServoStyleEngineReal");
+    let mut engine = ServoStyleEngineReal::new()?;
+    println!("✅ Successfully created ServoStyleEngineReal");
     println!("   This engine communicates with Servo processes to access Stylo's APIs");
     println!();
 
@@ -102,12 +102,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     for (selector, property) in test_queries {
-        match engine.get_computed_style(selector, property, None).await {
+        match engine.get_computed_style(selector, property).await {
             Ok(value) => {
                 println!("  {} -> {}: {}", selector, property, value);
             }
-            Err(ServoStyleError::ElementNotFound(msg)) => {
-                println!("  {} -> {}: Element not found ({})", selector, property, msg);
+            Err(ServoStyleError::ComputationError(msg)) => {
+                println!("  {} -> {}: Computation error ({})", selector, property, msg);
             }
             Err(e) => {
                 println!("  {} -> {}: Error - {}", selector, property, e);
@@ -118,7 +118,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test 5: Get all computed styles for an element
     println!("📋 Test 5: Getting all computed styles for .title element");
-    match engine.get_all_computed_styles(".title", None).await {
+    match engine.get_all_computed_styles(".title").await {
         Ok(styles) => {
             println!("✅ Retrieved {} computed properties:", styles.len());
             
