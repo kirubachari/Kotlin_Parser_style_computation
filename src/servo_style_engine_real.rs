@@ -1,9 +1,10 @@
 use std::collections::HashMap;
-use std::process::{Child, Command, Stdio};
-use std::io::{Write, BufRead, BufReader};
+use std::process::Command;
+use std::fs;
+use std::io::Write;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::time::{sleep, Duration};
+use tempfile::NamedTempFile;
 
 #[derive(Error, Debug)]
 pub enum ServoStyleError {
@@ -39,11 +40,9 @@ struct StyleResponse {
 
 /// Real Servo-based CSS style engine that uses Stylo's native APIs
 /// 
-/// This implementation communicates with actual Servo processes to compute CSS styles
-/// using Servo's getComputedStyle() implementation, which directly calls Stylo's
-/// native APIs including resolve_style(), SharedStyleContext, and ComputedValues.
+/// This implementation creates HTML files with embedded JavaScript to extract computed styles,
+/// then runs Servo to process them and extract the results using real Stylo APIs.
 pub struct ServoStyleEngineReal {
-    servo_process: Option<Child>,
     base_html: String,
     stylesheets: Vec<String>,
     servo_path: Option<String>,
@@ -74,7 +73,6 @@ impl ServoStyleEngineReal {
         }
 
         Ok(ServoStyleEngineReal {
-            servo_process: None,
             base_html: String::new(),
             stylesheets: Vec::new(),
             servo_path,
@@ -93,51 +91,176 @@ impl ServoStyleEngineReal {
         Ok(())
     }
 
-    /// Start Servo process if not already running
-    async fn ensure_servo_process(&mut self) -> Result<(), ServoStyleError> {
-        if self.servo_process.is_none() {
-            let servo_cmd = self.servo_path.as_deref().unwrap_or("servo");
-            
-            println!("🚀 Starting Servo process for style computation...");
-            let child = Command::new(servo_cmd)
-                .arg("--headless")
-                .arg("--style-query-mode")  // Custom flag for style queries
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()?;
-            
-            self.servo_process = Some(child);
-            println!("✅ Servo process started successfully");
+    /// Create an HTML file with embedded JavaScript to extract computed styles
+    fn create_style_extraction_html(&self, selector: &str, property: Option<&str>) -> String {
+        let combined_css = self.stylesheets.join("\n");
+        
+        let script = if let Some(prop) = property {
+            format!(r#"
+                window.addEventListener('load', function() {{
+                    try {{
+                        var element = document.querySelector('{}');
+                        if (element) {{
+                            var computedStyle = window.getComputedStyle(element);
+                            var value = computedStyle.getPropertyValue('{}');
+                            console.log('COMPUTED_STYLE_RESULT:' + JSON.stringify({{
+                                selector: '{}',
+                                property: '{}',
+                                value: value
+                            }}));
+                        }} else {{
+                            console.log('COMPUTED_STYLE_ERROR:Element not found');
+                        }}
+                    }} catch (e) {{
+                        console.log('COMPUTED_STYLE_ERROR:' + e.message);
+                    }}
+                    // Give Servo time to log then exit
+                    setTimeout(function() {{ window.close(); }}, 100);
+                }});
+            "#, selector, prop, selector, prop)
+        } else {
+            format!(r#"
+                window.addEventListener('load', function() {{
+                    try {{
+                        var element = document.querySelector('{}');
+                        if (element) {{
+                            var computedStyle = window.getComputedStyle(element);
+                            var styles = {{}};
+                            for (var i = 0; i < computedStyle.length; i++) {{
+                                var propName = computedStyle[i];
+                                styles[propName] = computedStyle.getPropertyValue(propName);
+                            }}
+                            console.log('COMPUTED_STYLES_RESULT:' + JSON.stringify({{
+                                selector: '{}',
+                                styles: styles
+                            }}));
+                        }} else {{
+                            console.log('COMPUTED_STYLE_ERROR:Element not found');
+                        }}
+                    }} catch (e) {{
+                        console.log('COMPUTED_STYLE_ERROR:' + e.message);
+                    }}
+                    setTimeout(function() {{ window.close(); }}, 100);
+                }});
+            "#, selector, selector)
+        };
+
+        format!(r#"<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        {}
+    </style>
+</head>
+<body>
+    {}
+    <script>
+        {}
+    </script>
+</body>
+</html>"#, combined_css, self.base_html, script)
+    }
+
+    /// Run Servo with the HTML file and extract computed styles from output
+    async fn run_servo_and_extract_styles(&self, html_content: &str) -> Result<String, ServoStyleError> {
+        // Create temporary HTML file
+        let mut temp_file = NamedTempFile::new()
+            .map_err(|e| ServoStyleError::CommunicationError(format!("Failed to create temp file: {}", e)))?;
+        
+        temp_file.write_all(html_content.as_bytes())
+            .map_err(|e| ServoStyleError::CommunicationError(format!("Failed to write temp file: {}", e)))?;
+        
+        let temp_path = temp_file.path();
+        let servo_cmd = self.servo_path.as_deref().unwrap_or("servo");
+        
+        println!("🚀 Running Servo to compute styles using real Stylo APIs...");
+        println!("   HTML file: {:?}", temp_path);
+        
+        // Run Servo with the HTML file
+        let output = Command::new(servo_cmd)
+            .arg("--headless")
+            .arg("--hard-fail")  // Exit on JS errors
+            .arg(temp_path)
+            .output()
+            .map_err(|e| ServoStyleError::CommunicationError(format!("Failed to run Servo: {}", e)))?;
+        
+        // Extract computed style results from Servo's console output
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        
+        // Look for our computed style results in the output
+        for line in stdout.lines().chain(stderr.lines()) {
+            if line.contains("COMPUTED_STYLE_RESULT:") {
+                if let Some(json_part) = line.split("COMPUTED_STYLE_RESULT:").nth(1) {
+                    return Ok(json_part.to_string());
+                }
+            }
+            if line.contains("COMPUTED_STYLES_RESULT:") {
+                if let Some(json_part) = line.split("COMPUTED_STYLES_RESULT:").nth(1) {
+                    return Ok(json_part.to_string());
+                }
+            }
+            if line.contains("COMPUTED_STYLE_ERROR:") {
+                if let Some(error_part) = line.split("COMPUTED_STYLE_ERROR:").nth(1) {
+                    return Err(ServoStyleError::CommunicationError(format!("Servo error: {}", error_part)));
+                }
+            }
         }
-        Ok(())
+        
+        Err(ServoStyleError::CommunicationError(format!(
+            "No computed style result found in Servo output. Stdout: {}, Stderr: {}", 
+            stdout, stderr
+        )))
     }
 
     /// Query Servo process for computed styles using real Stylo APIs
     async fn query_servo_process(&mut self, query: StyleQuery) -> Result<StyleResponse, ServoStyleError> {
-        self.ensure_servo_process().await?;
+        println!("🔄 Querying real Servo process for computed styles...");
+        println!("   Using genuine Stylo APIs via Servo's getComputedStyle()");
         
-        if let Some(process) = &mut self.servo_process {
-            // Send JSON query to Servo
-            let query_json = serde_json::to_string(&query)?;
-            
-            if let Some(stdin) = process.stdin.as_mut() {
-                writeln!(stdin, "{}", query_json)?;
-                stdin.flush()?;
+        let html_content = self.create_style_extraction_html(
+            &query.selector, 
+            query.property.as_deref()
+        );
+        
+        let result_json = self.run_servo_and_extract_styles(&html_content).await?;
+        
+        // Parse the JSON result
+        if query.property.is_some() {
+            // Single property result
+            #[derive(Deserialize)]
+            struct SingleResult {
+                value: String,
             }
             
-            // Read JSON response from Servo
-            if let Some(stdout) = process.stdout.as_mut() {
-                let mut reader = BufReader::new(stdout);
-                let mut response_line = String::new();
-                reader.read_line(&mut response_line)?;
-                
-                let response: StyleResponse = serde_json::from_str(&response_line.trim())?;
-                return Ok(response);
+            let result: SingleResult = serde_json::from_str(&result_json)
+                .map_err(|e| ServoStyleError::CommunicationError(format!("JSON parse error: {}", e)))?;
+            
+            Ok(StyleResponse {
+                id: query.id,
+                success: true,
+                computed_value: Some(result.value),
+                computed_styles: None,
+                error: None,
+            })
+        } else {
+            // All styles result
+            #[derive(Deserialize)]
+            struct AllStylesResult {
+                styles: HashMap<String, String>,
             }
+            
+            let result: AllStylesResult = serde_json::from_str(&result_json)
+                .map_err(|e| ServoStyleError::CommunicationError(format!("JSON parse error: {}", e)))?;
+            
+            Ok(StyleResponse {
+                id: query.id,
+                success: true,
+                computed_value: None,
+                computed_styles: Some(result.styles),
+                error: None,
+            })
         }
-        
-        Err(ServoStyleError::CommunicationError("Failed to communicate with Servo process".to_string()))
     }
 
     /// Get computed style for a specific CSS property using real Stylo APIs
@@ -195,16 +318,6 @@ impl ServoStyleEngineReal {
             Err(ServoStyleError::ComputationError(
                 response.error.unwrap_or_else(|| "Unknown error".to_string())
             ))
-        }
-    }
-}
-
-impl Drop for ServoStyleEngineReal {
-    fn drop(&mut self) {
-        if let Some(mut process) = self.servo_process.take() {
-            let _ = process.kill();
-            let _ = process.wait();
-            println!("🛑 Servo process terminated");
         }
     }
 }
