@@ -171,88 +171,75 @@ impl ServoStyleEngineReal {
         let temp_path = temp_file.path();
         let servo_cmd = self.servo_path.as_deref().unwrap_or("servo");
         
-        println!("🚀 Running Servo to compute styles using real Stylo APIs...");
-        println!("   HTML file: {:?}", temp_path);
-        println!("   Servo command: {}", servo_cmd);
-        
-        // Create unique filenames for debug and result files
+        // Create result file path
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
+        let result_path = format!("/tmp/servo_output_{}.txt", timestamp);
         
-        let debug_path = format!("/tmp/debug_servo_{}.html", timestamp);
-        let result_path = format!("/tmp/servo_result_{}.txt", timestamp);
+        println!("🚀 Running Servo with 10 second timeout...");
+        println!("   Output will be saved to: {}", result_path);
         
-        std::fs::write(&debug_path, html_content)
-            .map_err(|e| ServoStyleError::CommunicationError(format!("Failed to write debug file: {}", e)))?;
-        println!("   Debug HTML saved to: {}", debug_path);
-        println!("   📁 You can inspect this file or run manually: {} --headless file://{}", servo_cmd, debug_path);
+        // Run Servo with timeout
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            tokio::process::Command::new(servo_cmd)
+                .arg("--headless")
+                .arg(format!("file://{}", temp_path.display()))
+                .output()
+        ).await;
         
-        // Try a different approach - spawn process and read output in real-time
-        println!("🚀 Starting Servo process with real-time output capture...");
+        let (stdout, stderr, status_info) = match output {
+            Ok(Ok(process_output)) => {
+                let stdout = String::from_utf8_lossy(&process_output.stdout);
+                let stderr = String::from_utf8_lossy(&process_output.stderr);
+                let status_info = format!("Exit Code: {}", process_output.status);
+                println!("✅ Servo completed normally");
+                (stdout.to_string(), stderr.to_string(), status_info)
+            },
+            Ok(Err(e)) => {
+                let error_content = format!("SERVO ERROR\n===========\nFailed to start: {}\n", e);
+                std::fs::write(&result_path, error_content)?;
+                return Err(ServoStyleError::CommunicationError(format!("Failed to start Servo: {}", e)));
+            },
+            Err(_) => {
+                println!("⏰ Servo timed out, but checking if it wrote results to temp file...");
+                // Even if timed out, Servo might have written results
+                ("".to_string(), "".to_string(), "Status: Timed out after 10 seconds".to_string())
+            }
+        };
         
-        let mut child = tokio::process::Command::new(servo_cmd)
-            .arg("--headless")
-            .arg(format!("file://{}", temp_path.display()))
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| ServoStyleError::CommunicationError(format!("Failed to start Servo: {}", e)))?;
+        // Write to text file
+        let content = format!("SERVO OUTPUT\n============\n{}\n\nSTDOUT:\n{}\n\nSTDERR:\n{}\n", 
+            status_info, stdout, stderr);
+        std::fs::write(&result_path, content)?;
+        println!("   📄 Output saved to: {}", result_path);
         
-        // Wait for output with timeout, but check periodically
-        let start_time = std::time::Instant::now();
-        let timeout_duration = std::time::Duration::from_secs(2);
-        
-        while start_time.elapsed() < timeout_duration {
-            // Check if process has finished
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    println!("✅ Servo finished with status: {}", status);
-                    let output = child.wait_with_output().await
-                        .map_err(|e| ServoStyleError::CommunicationError(format!("Failed to get output: {}", e)))?;
-                    
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    
-                    // Write raw output to result file
-                    let output_content = format!("STDOUT:\n{}\n\nSTDERR:\n{}\n", stdout, stderr);
-                    std::fs::write(&result_path, &output_content)
-                        .map_err(|e| ServoStyleError::CommunicationError(format!("Failed to write result file: {}", e)))?;
-                    println!("   📄 Raw output saved to: {}", result_path);
-                    
-                    // Cat the result file for display
-                    if let Ok(cat_output) = std::process::Command::new("cat")
-                        .arg(&result_path)
-                        .output() {
-                        let cat_content = String::from_utf8_lossy(&cat_output.stdout);
-                        println!("   📋 Result file contents:\n{}", cat_content);
-                    }
-                    
-                    // Look for results in output
-                    return self.parse_servo_output(&stdout, &stderr);
-                }
-                Ok(None) => {
-                    // Process still running, wait a bit
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                }
-                Err(e) => {
-                    return Err(ServoStyleError::CommunicationError(format!("Error checking process: {}", e)));
-                }
+        // Check if we have results in stdout/stderr first
+        if !stdout.is_empty() || !stderr.is_empty() {
+            if let Ok(result) = self.parse_servo_output(&stdout, &stderr) {
+                return Ok(result);
             }
         }
         
-        // Timeout reached, kill the process
-        println!("⏰ Servo timed out after 2 seconds, killing process...");
-        let _ = child.kill().await;
+        // If no results in stdout/stderr, check if temp file has console output
+        // Servo might have written console.log results to the temp file or other locations
+        println!("   🔍 Checking for results in alternative locations...");
         
-        // Write timeout info to result file
-        let timeout_content = format!("TIMEOUT: Servo process timed out after 2 seconds\nTimestamp: {}\n", timestamp);
-        std::fs::write(&result_path, &timeout_content)
-            .map_err(|e| ServoStyleError::CommunicationError(format!("Failed to write timeout result: {}", e)))?;
-        println!("   📄 Timeout info saved to: {}", result_path);
+        // Sometimes Servo writes console output to files or stdout isn't captured properly
+        // Let's try reading any output files Servo might have created
+        if let Ok(temp_content) = std::fs::read_to_string(temp_path) {
+            if temp_content.contains("COMPUTED_STYLE_RESULT:") || temp_content.contains("COMPUTED_STYLES_RESULT:") {
+                println!("   ✅ Found results in temp file!");
+                return self.parse_servo_output(&temp_content, "");
+            }
+        }
         
-        Err(ServoStyleError::CommunicationError("Servo process timed out after 2 seconds".to_string()))
+        // If still no results, the computation may have failed
+        Err(ServoStyleError::CommunicationError(format!(
+            "No computed style results found. Check output file: {}", result_path
+        )))
     }
     
     /// Parse Servo output to extract computed style results
