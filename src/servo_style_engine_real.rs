@@ -175,11 +175,16 @@ impl ServoStyleEngineReal {
         println!("   HTML file: {:?}", temp_path);
         println!("   Servo command: {}", servo_cmd);
         
-        // First, let's save the HTML content to debug
-        let debug_path = "/tmp/debug_servo.html";
-        std::fs::write(debug_path, html_content)
+        // First, let's save the HTML content to debug with unique filename
+        let debug_path = format!("/tmp/debug_servo_{}.html", 
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs());
+        std::fs::write(&debug_path, html_content)
             .map_err(|e| ServoStyleError::CommunicationError(format!("Failed to write debug file: {}", e)))?;
         println!("   Debug HTML saved to: {}", debug_path);
+        println!("   📁 You can inspect this file or run manually: {} --headless file://{}", servo_cmd, debug_path);
         
         // Try a different approach - spawn process and read output in real-time
         println!("🚀 Starting Servo process with real-time output capture...");
@@ -235,13 +240,46 @@ impl ServoStyleEngineReal {
         for line in stdout.lines().chain(stderr.lines()) {
             if line.contains("COMPUTED_STYLE_RESULT:") {
                 if let Some(json_part) = line.split("COMPUTED_STYLE_RESULT:").nth(1) {
-                    println!("   Found result: {}", json_part);
+                    println!("   ✅ Found single property result");
+                    
+                    // Parse and show clean result
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_part) {
+                        if let (Some(selector), Some(property), Some(value)) = (
+                            parsed["selector"].as_str(),
+                            parsed["property"].as_str(), 
+                            parsed["value"].as_str()
+                        ) {
+                            println!("   🎯 {} -> {}: {}", selector, property, value);
+                        }
+                    }
+                    
                     return Ok(json_part.to_string());
                 }
             }
             if line.contains("COMPUTED_STYLES_RESULT:") {
                 if let Some(json_part) = line.split("COMPUTED_STYLES_RESULT:").nth(1) {
-                    println!("   Found all styles result: {}", json_part);
+                    println!("   ✅ Found all styles result");
+                    
+                    // Parse and show summary
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_part) {
+                        if let (Some(selector), Some(styles_obj)) = (
+                            parsed["selector"].as_str(),
+                            parsed["styles"].as_object()
+                        ) {
+                            println!("   🎯 {} has {} computed properties", selector, styles_obj.len());
+                            
+                            // Show some key properties
+                            let key_props = ["color", "font-size", "font-weight", "background-color", "display", "width", "height"];
+                            for prop in &key_props {
+                                if let Some(value) = styles_obj.get(*prop).and_then(|v| v.as_str()) {
+                                    if !value.is_empty() && value != "auto" && value != "0px" {
+                                        println!("   📋   {}: {}", prop, value);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
                     return Ok(json_part.to_string());
                 }
             }
