@@ -1,0 +1,13 @@
+[servo]
+# Path to your Servo executable (update this path when you build Servo)
+executable_path = "/Users/kiruba-2957/Development/Kotlin-Parser-Rust/servo/target/debug/servo"
+mode = "real"
+
+[integration]
+# Set to true to enable real Servo integration instead of simulation
+enable_real_integration = true
+use_javascript_injection = true
+
+[debug]
+verbose_logging = true
+show_servo_output = true
