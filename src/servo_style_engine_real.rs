@@ -112,8 +112,8 @@ impl ServoStyleEngineReal {
                     }} catch (e) {{
                         console.log('COMPUTED_STYLE_ERROR:' + e.message);
                     }}
-                    // Give Servo time to log then exit
-                    setTimeout(function() {{ window.close(); }}, 100);
+                    // Give Servo more time to log then exit
+                    setTimeout(function() {{ window.close(); }}, 500);
                 }});
             "#, selector, prop, selector, prop)
         } else {
@@ -138,7 +138,7 @@ impl ServoStyleEngineReal {
                     }} catch (e) {{
                         console.log('COMPUTED_STYLE_ERROR:' + e.message);
                     }}
-                    setTimeout(function() {{ window.close(); }}, 100);
+                    setTimeout(function() {{ window.close(); }}, 500);
                 }});
             "#, selector, selector)
         };
@@ -256,9 +256,12 @@ impl ServoStyleEngineReal {
                 if let Some(json_part) = line.split("COMPUTED_STYLE_RESULT:").nth(1) {
                     println!("   ✅ Found single property result");
                     
+                    // Clean the JSON part - remove extra whitespace and potential issues
+                    let cleaned_json = json_part.trim();
+                    
                     // Parse and show clean result
                     let mut parsed_content = String::new();
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_part) {
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(cleaned_json) {
                         if let (Some(selector), Some(property), Some(value)) = (
                             parsed["selector"].as_str(),
                             parsed["property"].as_str(), 
@@ -266,10 +269,10 @@ impl ServoStyleEngineReal {
                         ) {
                             let result_line = format!("{} -> {}: {}", selector, property, value);
                             println!("   🎯 {}", result_line);
-                            parsed_content = format!("SINGLE PROPERTY RESULT:\n{}\n\nRAW JSON:\n{}\n", result_line, json_part);
+                            parsed_content = format!("SINGLE PROPERTY RESULT:\n{}\n\nRAW JSON:\n{}\n", result_line, cleaned_json);
                         }
                     } else {
-                        parsed_content = format!("SINGLE PROPERTY RESULT (RAW):\n{}\n", json_part);
+                        parsed_content = format!("SINGLE PROPERTY RESULT (RAW):\n{}\n", cleaned_json);
                     }
                     
                     // Save parsed result to file and cat it
@@ -281,16 +284,19 @@ impl ServoStyleEngineReal {
                         println!("   📋 Parsed result:\n{}", cat_content);
                     }
                     
-                    return Ok(json_part.to_string());
+                    return Ok(cleaned_json.to_string());
                 }
             }
             if line.contains("COMPUTED_STYLES_RESULT:") {
                 if let Some(json_part) = line.split("COMPUTED_STYLES_RESULT:").nth(1) {
                     println!("   ✅ Found all styles result");
                     
+                    // Clean the JSON part - remove extra whitespace and potential issues
+                    let cleaned_json = json_part.trim();
+                    
                     // Parse and show summary
                     let mut parsed_content = String::new();
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_part) {
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(cleaned_json) {
                         if let (Some(selector), Some(styles_obj)) = (
                             parsed["selector"].as_str(),
                             parsed["styles"].as_object()
@@ -312,10 +318,10 @@ impl ServoStyleEngineReal {
                                 }
                             }
                             
-                            parsed_content.push_str(&format!("\nRAW JSON:\n{}\n", json_part));
+                            parsed_content.push_str(&format!("\nRAW JSON:\n{}\n", cleaned_json));
                         }
                     } else {
-                        parsed_content = format!("ALL STYLES RESULT (RAW):\n{}\n", json_part);
+                        parsed_content = format!("ALL STYLES RESULT (RAW):\n{}\n", cleaned_json);
                     }
                     
                     // Save parsed result to file and cat it
@@ -327,7 +333,7 @@ impl ServoStyleEngineReal {
                         println!("   📋 Parsed result:\n{}", cat_content);
                     }
                     
-                    return Ok(json_part.to_string());
+                    return Ok(cleaned_json.to_string());
                 }
             }
             if line.contains("COMPUTED_STYLE_ERROR:") {
@@ -372,8 +378,14 @@ impl ServoStyleEngineReal {
                 value: String,
             }
             
+            println!("🔍 Attempting to parse JSON result: {}", &result_json[..std::cmp::min(100, result_json.len())]);
+            
             let result: SingleResult = serde_json::from_str(&result_json)
-                .map_err(|e| ServoStyleError::CommunicationError(format!("JSON parse error: {}", e)))?;
+                .map_err(|e| {
+                    println!("❌ JSON parse failed: {}", e);
+                    println!("   Raw JSON (first 200 chars): {}", &result_json[..std::cmp::min(200, result_json.len())]);
+                    ServoStyleError::CommunicationError(format!("JSON parse error: {}. Raw content: {}", e, result_json))
+                })?;
             
             Ok(StyleResponse {
                 id: query.id,
