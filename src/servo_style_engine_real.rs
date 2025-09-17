@@ -175,12 +175,15 @@ impl ServoStyleEngineReal {
         println!("   HTML file: {:?}", temp_path);
         println!("   Servo command: {}", servo_cmd);
         
-        // First, let's save the HTML content to debug with unique filename
-        let debug_path = format!("/tmp/debug_servo_{}.html", 
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs());
+        // Create unique filenames for debug and result files
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        
+        let debug_path = format!("/tmp/debug_servo_{}.html", timestamp);
+        let result_path = format!("/tmp/servo_result_{}.txt", timestamp);
+        
         std::fs::write(&debug_path, html_content)
             .map_err(|e| ServoStyleError::CommunicationError(format!("Failed to write debug file: {}", e)))?;
         println!("   Debug HTML saved to: {}", debug_path);
@@ -212,8 +215,19 @@ impl ServoStyleEngineReal {
                     let stdout = String::from_utf8_lossy(&output.stdout);
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     
-                    println!("   Servo stdout: {}", stdout);
-                    println!("   Servo stderr: {}", stderr);
+                    // Write raw output to result file
+                    let output_content = format!("STDOUT:\n{}\n\nSTDERR:\n{}\n", stdout, stderr);
+                    std::fs::write(&result_path, &output_content)
+                        .map_err(|e| ServoStyleError::CommunicationError(format!("Failed to write result file: {}", e)))?;
+                    println!("   📄 Raw output saved to: {}", result_path);
+                    
+                    // Cat the result file for display
+                    if let Ok(cat_output) = std::process::Command::new("cat")
+                        .arg(&result_path)
+                        .output() {
+                        let cat_content = String::from_utf8_lossy(&cat_output.stdout);
+                        println!("   📋 Result file contents:\n{}", cat_content);
+                    }
                     
                     // Look for results in output
                     return self.parse_servo_output(&stdout, &stderr);
@@ -231,11 +245,24 @@ impl ServoStyleEngineReal {
         // Timeout reached, kill the process
         println!("⏰ Servo timed out after 15 seconds, killing process...");
         let _ = child.kill().await;
+        
+        // Write timeout info to result file
+        let timeout_content = format!("TIMEOUT: Servo process timed out after 15 seconds\nTimestamp: {}\n", timestamp);
+        std::fs::write(&result_path, &timeout_content)
+            .map_err(|e| ServoStyleError::CommunicationError(format!("Failed to write timeout result: {}", e)))?;
+        println!("   📄 Timeout info saved to: {}", result_path);
+        
         Err(ServoStyleError::CommunicationError("Servo process timed out after 15 seconds".to_string()))
     }
     
     /// Parse Servo output to extract computed style results
     fn parse_servo_output(&self, stdout: &str, stderr: &str) -> Result<String, ServoStyleError> {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let parsed_result_path = format!("/tmp/servo_parsed_{}.txt", timestamp);
+        
         // Look for our computed style results in the output
         for line in stdout.lines().chain(stderr.lines()) {
             if line.contains("COMPUTED_STYLE_RESULT:") {
@@ -243,14 +270,28 @@ impl ServoStyleEngineReal {
                     println!("   ✅ Found single property result");
                     
                     // Parse and show clean result
+                    let mut parsed_content = String::new();
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_part) {
                         if let (Some(selector), Some(property), Some(value)) = (
                             parsed["selector"].as_str(),
                             parsed["property"].as_str(), 
                             parsed["value"].as_str()
                         ) {
-                            println!("   🎯 {} -> {}: {}", selector, property, value);
+                            let result_line = format!("{} -> {}: {}", selector, property, value);
+                            println!("   🎯 {}", result_line);
+                            parsed_content = format!("SINGLE PROPERTY RESULT:\n{}\n\nRAW JSON:\n{}\n", result_line, json_part);
                         }
+                    } else {
+                        parsed_content = format!("SINGLE PROPERTY RESULT (RAW):\n{}\n", json_part);
+                    }
+                    
+                    // Save parsed result to file and cat it
+                    std::fs::write(&parsed_result_path, &parsed_content).ok();
+                    println!("   📄 Parsed result saved to: {}", parsed_result_path);
+                    
+                    if let Ok(cat_output) = std::process::Command::new("cat").arg(&parsed_result_path).output() {
+                        let cat_content = String::from_utf8_lossy(&cat_output.stdout);
+                        println!("   📋 Parsed result:\n{}", cat_content);
                     }
                     
                     return Ok(json_part.to_string());
@@ -261,23 +302,42 @@ impl ServoStyleEngineReal {
                     println!("   ✅ Found all styles result");
                     
                     // Parse and show summary
+                    let mut parsed_content = String::new();
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_part) {
                         if let (Some(selector), Some(styles_obj)) = (
                             parsed["selector"].as_str(),
                             parsed["styles"].as_object()
                         ) {
-                            println!("   🎯 {} has {} computed properties", selector, styles_obj.len());
+                            let summary_line = format!("{} has {} computed properties", selector, styles_obj.len());
+                            println!("   🎯 {}", summary_line);
+                            
+                            parsed_content.push_str(&format!("ALL STYLES RESULT:\n{}\n\nKEY PROPERTIES:\n", summary_line));
                             
                             // Show some key properties
                             let key_props = ["color", "font-size", "font-weight", "background-color", "display", "width", "height"];
                             for prop in &key_props {
                                 if let Some(value) = styles_obj.get(*prop).and_then(|v| v.as_str()) {
                                     if !value.is_empty() && value != "auto" && value != "0px" {
+                                        let prop_line = format!("  {}: {}", prop, value);
                                         println!("   📋   {}: {}", prop, value);
+                                        parsed_content.push_str(&format!("{}\n", prop_line));
                                     }
                                 }
                             }
+                            
+                            parsed_content.push_str(&format!("\nRAW JSON:\n{}\n", json_part));
                         }
+                    } else {
+                        parsed_content = format!("ALL STYLES RESULT (RAW):\n{}\n", json_part);
+                    }
+                    
+                    // Save parsed result to file and cat it
+                    std::fs::write(&parsed_result_path, &parsed_content).ok();
+                    println!("   📄 Parsed result saved to: {}", parsed_result_path);
+                    
+                    if let Ok(cat_output) = std::process::Command::new("cat").arg(&parsed_result_path).output() {
+                        let cat_content = String::from_utf8_lossy(&cat_output.stdout);
+                        println!("   📋 Parsed result:\n{}", cat_content);
                     }
                     
                     return Ok(json_part.to_string());
@@ -285,14 +345,23 @@ impl ServoStyleEngineReal {
             }
             if line.contains("COMPUTED_STYLE_ERROR:") {
                 if let Some(error_part) = line.split("COMPUTED_STYLE_ERROR:").nth(1) {
+                    let error_content = format!("ERROR:\n{}\n", error_part);
+                    std::fs::write(&parsed_result_path, &error_content).ok();
+                    println!("   📄 Error saved to: {}", parsed_result_path);
+                    
                     return Err(ServoStyleError::CommunicationError(format!("Servo error: {}", error_part)));
                 }
             }
         }
         
+        // No result found - save this info too
+        let no_result_content = format!("NO RESULT FOUND\n\nSTDOUT:\n{}\n\nSTDERR:\n{}\n", stdout, stderr);
+        std::fs::write(&parsed_result_path, &no_result_content).ok();
+        println!("   📄 No result info saved to: {}", parsed_result_path);
+        
         Err(ServoStyleError::CommunicationError(format!(
-            "No computed style result found in Servo output. Stdout: {}, Stderr: {}", 
-            stdout, stderr
+            "No computed style result found in Servo output. Check result file: {}", 
+            parsed_result_path
         )))
     }
 
